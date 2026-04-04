@@ -1,0 +1,5 @@
+﻿watchdog>=3.0.0
+pystray>=0.19.5
+Pillow>=10.0.0
+
+pyudev>=0.24.0
