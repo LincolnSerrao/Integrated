@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+from app.linux_native_sandbox import get_linux_native_sandbox_status
 from app.watch_config import get_quarantine_dir, get_runtime_watch_directories, is_linux_host
 
 try:
@@ -26,7 +27,7 @@ WINDOWS_11_BUILD_FLOOR = 22000
 DEFAULT_SANDBOX_PROVIDER = "windows-sandbox"
 VIRTUALBOX_PROVIDER = "virtualbox"
 WINDOWS_SANDBOX_PROVIDER = "windows-sandbox"
-LINUX_QUARANTINE_PROVIDER = "linux-quarantine"
+LINUX_PROJECT_SANDBOX_PROVIDER = "linux-project-sandbox"
 COMMON_VBOXMANAGE_PATHS = (
     Path(r"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"),
     Path(r"C:\Program Files (x86)\Oracle\VirtualBox\VBoxManage.exe"),
@@ -95,10 +96,12 @@ def _normalize_provider_name(value: str | None) -> str:
         "virtual-box": VIRTUALBOX_PROVIDER,
         "virtual_box": VIRTUALBOX_PROVIDER,
         "vbox": VIRTUALBOX_PROVIDER,
-        "linux": LINUX_QUARANTINE_PROVIDER,
-        "linux_quarantine": LINUX_QUARANTINE_PROVIDER,
-        "local": LINUX_QUARANTINE_PROVIDER,
-        "local-quarantine": LINUX_QUARANTINE_PROVIDER,
+        "linux": LINUX_PROJECT_SANDBOX_PROVIDER,
+        "linux_quarantine": LINUX_PROJECT_SANDBOX_PROVIDER,
+        "linux-project-sandbox": LINUX_PROJECT_SANDBOX_PROVIDER,
+        "project-sandbox": LINUX_PROJECT_SANDBOX_PROVIDER,
+        "local": LINUX_PROJECT_SANDBOX_PROVIDER,
+        "local-quarantine": LINUX_PROJECT_SANDBOX_PROVIDER,
     }
     return aliases.get(normalized, normalized or DEFAULT_SANDBOX_PROVIDER)
 
@@ -109,7 +112,7 @@ def get_configured_sandbox_provider() -> str:
         return _normalize_provider_name(explicit)
 
     if is_linux_host():
-        return LINUX_QUARANTINE_PROVIDER
+        return LINUX_PROJECT_SANDBOX_PROVIDER
 
     if get_virtualbox_vm_name():
         return VIRTUALBOX_PROVIDER
@@ -121,8 +124,8 @@ def get_sandbox_provider_name(provider: str | None = None) -> str:
     resolved = _normalize_provider_name(provider or get_configured_sandbox_provider())
     if resolved == VIRTUALBOX_PROVIDER:
         return "VirtualBox"
-    if resolved == LINUX_QUARANTINE_PROVIDER:
-        return "Local Quarantine"
+    if resolved == LINUX_PROJECT_SANDBOX_PROVIDER:
+        return "Project Sandbox"
     return "Windows Sandbox"
 
 
@@ -190,28 +193,40 @@ def get_windows_sandbox_status() -> dict[str, Any]:
     }
 
 
-def get_linux_quarantine_status() -> dict[str, Any]:
-    provider_name = get_sandbox_provider_name(LINUX_QUARANTINE_PROVIDER)
+def get_linux_project_sandbox_status() -> dict[str, Any]:
+    provider_name = get_sandbox_provider_name(LINUX_PROJECT_SANDBOX_PROVIDER)
     quarantine_dir = get_quarantine_dir()
     active_watch_directories = get_runtime_watch_directories()
-    ready = bool(is_linux_host())
-    if ready:
+    native_status = get_linux_native_sandbox_status()
+    ready = bool(is_linux_host() and native_status.get("ready"))
+
+    if not is_linux_host():
+        message = f"{provider_name} is only available on Linux hosts."
+    elif ready:
         message = (
-            f"{provider_name} is active. New files from your selected folders and mounted external drives "
-            f"will be moved into {quarantine_dir} for review in the app."
+            f"{provider_name} is ready. Captured files can be reviewed inside a disposable isolated session "
+            f"before you release or delete them."
         )
     else:
-        message = f"{provider_name} is only available on Linux hosts."
+        message = (
+            f"{provider_name} needs a real Linux isolation runtime before it can open review sessions. "
+            f"{native_status.get('message')}"
+        )
 
     return {
-        "provider": LINUX_QUARANTINE_PROVIDER,
+        "provider": LINUX_PROJECT_SANDBOX_PROVIDER,
         "provider_name": provider_name,
         "ready": ready,
-        "supported": ready,
+        "supported": bool(is_linux_host()),
         "configured": True,
-        "quarantine_dir": str(quarantine_dir),
+        "session_mode": "disposable-per-file",
+        "review_storage_dir": str(quarantine_dir),
         "active_watch_directories": active_watch_directories,
         "message": message,
+        "runtime": native_status,
+        "runtime_ready": bool(native_status.get("ready")),
+        "runtime_provider_name": native_status.get("provider_name"),
+        "runtime_message": native_status.get("message"),
     }
 
 
@@ -451,6 +466,6 @@ def get_sandbox_status() -> dict[str, Any]:
     provider = get_configured_sandbox_provider()
     if provider == VIRTUALBOX_PROVIDER:
         return get_virtualbox_status()
-    if provider == LINUX_QUARANTINE_PROVIDER:
-        return get_linux_quarantine_status()
+    if provider == LINUX_PROJECT_SANDBOX_PROVIDER:
+        return get_linux_project_sandbox_status()
     return get_windows_sandbox_status()

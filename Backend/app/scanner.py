@@ -14,12 +14,25 @@ APP_DIR = Path(__file__).resolve().parent
 MODEL_DIR = APP_DIR / "models"
 MODEL_PATH = MODEL_DIR / "cyber_shield_zero_day.pth"
 NORM_PATH = MODEL_DIR / "normalization.npz"
+MODEL_DISPLAY_NAME = "Cyber Shield Zero-Day Detector"
+MODEL_ARCHITECTURE_NAME = "Feed-Forward Neural Network"
 REPORTS_DIR = APP_DIR / "reports"
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 SCAN_LOG_FILE = REPORTS_DIR / "scan_events.jsonl"
 
 DEFAULT_BLOCK_THRESHOLD = 0.8
 DEFAULT_ALLOW_THRESHOLD = 0.2
+
+
+def current_model_identity() -> dict[str, Any]:
+    return {
+        "model_name": MODEL_DISPLAY_NAME,
+        "model_architecture": MODEL_ARCHITECTURE_NAME,
+        "model_artifact_name": MODEL_PATH.name,
+        "model_artifact_path": str(MODEL_PATH),
+        "normalization_artifact_name": NORM_PATH.name,
+        "normalization_artifact_path": str(NORM_PATH),
+    }
 
 
 class ScannerStageError(RuntimeError):
@@ -160,7 +173,8 @@ def _combine_scores(static_prob: float, behavior_risk: float | None, fusion_alph
 
 
 def write_scan_event(payload: dict[str, Any]) -> dict[str, Any]:
-    event = dict(payload)
+    event = {**current_model_identity(), **dict(payload)}
+    event.setdefault("overall_result", "Suspicious")
     event.setdefault("ts", datetime.utcnow().isoformat(timespec="milliseconds") + "Z")
     with SCAN_LOG_FILE.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event) + "\n")
@@ -193,12 +207,31 @@ def _heuristic_scan(file_path: Path) -> dict[str, Any]:
         decision = "UNCERTAIN"
 
     return {
+        **current_model_identity(),
         "engine": "heuristic",
         "decision": decision,
         "static_prob": risk,
         "behavior_risk": None,
         "fused_risk": risk,
         "reasons": reasons or ["no high-risk signals detected"],
+    }
+
+
+def _model_unavailable_result(file_path: Path, exc: Exception) -> dict[str, Any]:
+    heuristic = _heuristic_scan(file_path)
+    reasons = list(heuristic.get("reasons", []))
+    reasons.append("trained model verdict unavailable; result held for review")
+    warning = f"[{exc.stage}] {exc}" if isinstance(exc, ScannerStageError) else str(exc)
+    return {
+        **current_model_identity(),
+        "engine": "ml_unavailable",
+        "decision": "UNCERTAIN",
+        "static_prob": heuristic.get("static_prob"),
+        "behavior_risk": None,
+        "fused_risk": 0.5,
+        "reasons": reasons,
+        "scanner_stage": exc.stage if isinstance(exc, ScannerStageError) else None,
+        "scanner_warning": warning,
     }
 
 
@@ -302,6 +335,7 @@ def _ml_scan(
         decision = "UNCERTAIN"
 
     return {
+        **current_model_identity(),
         "engine": "ml",
         "decision": decision,
         "static_prob": static_prob,
@@ -337,14 +371,10 @@ def scan_file(
                 fusion_alpha=fusion_alpha,
             )
         except Exception as exc:
-            result = _heuristic_scan(target)
-            if isinstance(exc, ScannerStageError):
-                result["scanner_stage"] = exc.stage
-                result["scanner_warning"] = f"[{exc.stage}] {exc}"
-            else:
-                result["scanner_warning"] = str(exc)
+            result = _model_unavailable_result(target, exc)
 
     payload = {
+        **current_model_identity(),
         "path": str(target),
         "file_name": target.name,
         "decision": result["decision"],
@@ -365,6 +395,10 @@ def scan_file(
 
 def ml_stack_status() -> dict[str, Any]:
     status: dict[str, Any] = {
+        "model_name": MODEL_DISPLAY_NAME,
+        "architecture_name": MODEL_ARCHITECTURE_NAME,
+        "model_artifact_name": MODEL_PATH.name,
+        "normalization_artifact_name": NORM_PATH.name,
         "model_path": str(MODEL_PATH),
         "norm_path": str(NORM_PATH),
         "model_exists": MODEL_PATH.exists(),

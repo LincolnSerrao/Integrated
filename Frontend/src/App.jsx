@@ -6,6 +6,7 @@ import DashboardPage from './pages/DashboardPage';
 import ScanPage from './pages/ScanPage';
 import ResultPage from './pages/ResultPage';
 import LogsPage from './pages/LogsPage';
+import SandboxConsolePage from './pages/SandboxConsolePage';
 
 const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000';
 const AUTO_OPEN_RESULT_KEY = 'autoOpenResultMarker';
@@ -14,7 +15,8 @@ const pages = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'scan', label: 'Scan Page' },
   { id: 'result', label: 'Result Page' },
-  { id: 'logs', label: 'Logs Page' }
+  { id: 'logs', label: 'Logs Page' },
+  { id: 'sandbox', label: 'Sandbox Console' }
 ];
 
 function readCachedOverallResult() {
@@ -71,10 +73,10 @@ export default function App() {
     const loadSystemState = async () => {
       try {
         const [sandboxResponse, latestResponse, configResponse, mlResponse] = await Promise.allSettled([
-          fetch(API_BASE_URL + '/api/scan/sandbox-status'),
-          fetch(API_BASE_URL + '/api/scan/latest'),
-          fetch(API_BASE_URL + '/api/scan/config'),
-          fetch(API_BASE_URL + '/api/scan/ml-status')
+          fetch(API_BASE_URL + '/api/scan/sandbox-status', { cache: 'no-store' }),
+          fetch(API_BASE_URL + '/api/scan/latest', { cache: 'no-store' }),
+          fetch(API_BASE_URL + '/api/scan/config', { cache: 'no-store' }),
+          fetch(API_BASE_URL + '/api/scan/ml-status', { cache: 'no-store' })
         ]);
 
         if (!active) return;
@@ -155,6 +157,7 @@ export default function App() {
         <ScanPage
           sandboxStatus={sandboxStatus}
           scanConfig={scanConfig}
+          mlStatus={mlStatus}
           onLatestResultChange={setLatestOverallResult}
         />
       );
@@ -164,10 +167,15 @@ export default function App() {
         <ResultPage
           overallResult={latestOverallResult || 'Safe'}
           onLatestResultChange={setLatestOverallResult}
+          sandboxStatus={sandboxStatus}
+          mlStatus={mlStatus}
         />
       );
     }
-    return <LogsPage />;
+    if (activePage === 'logs') {
+      return <LogsPage mlStatus={mlStatus} sandboxStatus={sandboxStatus} />;
+    }
+    return <SandboxConsolePage sandboxStatus={sandboxStatus} mlStatus={mlStatus} />;
   }, [activePage, latestOverallResult, mlStatus, sandboxStatus, scanConfig]);
 
   return (

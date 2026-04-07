@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 import os
 import shutil
 import sys
@@ -26,12 +27,24 @@ TEMP_DOWNLOAD_EXTENSIONS = (".crdownload", ".part", ".tmp", ".download")
 IGNORED_FILE_NAMES = {"desktop.ini", "thumbs.db", ".ds_store"}
 SKIPPED_DIR_NAMES = {".git", "node_modules", "__pycache__", ".venv", ".venv-ml"}
 
+EXECUTABLE_EXTENSIONS = {".exe"}
+COMMON_IMAGE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".svg",
+    ".ico", ".heic", ".heif", ".avif", ".jfif", ".pjpeg", ".pjp", ".apng", ".jxl",
+}
+
+try:
+    import imghdr
+except Exception:  # pragma: no cover - stdlib availability differs by runtime
+    imghdr = None
+
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.monitor_state import should_ignore_restored_path
 from app.sandbox_status import get_sandbox_status
-from app.scanner import scan_file, write_scan_event
+from app.linux_native_sandbox import analyze_file_in_native_sandbox
+from app.scanner import current_model_identity, write_scan_event
 from app.watch_config import (
     get_detected_external_directories,
     get_quarantine_dir,
@@ -48,6 +61,43 @@ def is_temporary_download_path(path: str) -> bool:
     if name.startswith("unconfirmed") or name.startswith("~$"):
         return True
     return lower.endswith(TEMP_DOWNLOAD_EXTENSIONS)
+
+
+def _looks_like_image(path: str) -> bool:
+    mime_type, _ = mimetypes.guess_type(path)
+    if mime_type and mime_type.startswith('image/'):
+        return True
+    if imghdr is None:
+        return False
+    try:
+        return imghdr.what(path) is not None
+    except OSError:
+        return False
+
+
+def should_capture_file(path: str) -> bool:
+    suffix = Path(path).suffix.lower()
+    if suffix in EXECUTABLE_EXTENSIONS:
+        return True
+    if suffix in COMMON_IMAGE_EXTENSIONS:
+        return True
+    return _looks_like_image(path)
+
+
+
+def _sandbox_managed_scan_result(scan_result: dict[str, Any], managed_path: str, session: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = {**current_model_identity(), **dict(scan_result)}
+    payload['path'] = str(managed_path)
+    payload['file_name'] = Path(str(managed_path)).name
+    payload['analysis_origin'] = 'project-sandbox'
+    if session:
+        payload['sandbox_session_id'] = session.get('session_id')
+        payload['sandbox_sample_copy'] = session.get('sample_copy')
+        payload['sandbox_session_root'] = session.get('session_root')
+        payload['sandbox_mode'] = session.get('mode') or 'analysis'
+        payload['analysis_runtime'] = session.get('analysis_runtime')
+        payload['analysis_engine'] = session.get('analysis_engine')
+    return payload
 
 
 class SandboxDownloadMonitor:
@@ -135,6 +185,8 @@ class SandboxDownloadMonitor:
                 for name in files:
                     candidate = os.path.join(current_root, name)
                     if self._is_within_quarantine(candidate) or is_temporary_download_path(candidate):
+                        continue
+                    if not should_capture_file(candidate):
                         continue
                     yield candidate
 
@@ -243,7 +295,7 @@ class SandboxDownloadMonitor:
     def _log_scan_result(self, scan_result: dict[str, Any], original_path: str, watch_source: str) -> None:
         sandbox_status = get_sandbox_status()
         provider_name = sandbox_status.get("provider_name") or "Quarantine"
-        payload = dict(scan_result)
+        payload = {**current_model_identity(), **dict(scan_result)}
         payload["path"] = str(scan_result.get("path") or "")
         payload["original_path"] = original_path
         payload["watch_source"] = watch_source
@@ -272,6 +324,8 @@ class SandboxDownloadMonitor:
         try:
             if is_temporary_download_path(absolute_path) or not os.path.exists(absolute_path):
                 return
+            if not should_capture_file(absolute_path):
+                return
 
             self._log_action("FILE_DETECTED", absolute_path)
             if not self._wait_for_stable_file(absolute_path):
@@ -287,7 +341,8 @@ class SandboxDownloadMonitor:
             self._log_action("FILE_MOVED_TO_QUARANTINE", quarantine_target)
 
             try:
-                scan_result = scan_file(quarantine_target, log_event=False)
+                session = analyze_file_in_native_sandbox(Path(quarantine_target))
+                scan_result = _sandbox_managed_scan_result(session.get('scan_result') or {}, quarantine_target, session)
             except Exception as exc:
                 scan_result = {
                     "path": quarantine_target,
@@ -296,12 +351,13 @@ class SandboxDownloadMonitor:
                     "static_prob": 0.5,
                     "behavior_risk": None,
                     "fused_risk": 0.5,
-                    "engine": "none",
+                    "engine": "sandbox_unavailable",
                     "reasons": [],
                     "scanner_stage": None,
                     "scanner_warning": str(exc),
                     "block_threshold": 0.8,
                     "allow_threshold": 0.2,
+                    "analysis_origin": "project-sandbox",
                 }
 
             self._log_scan_result(scan_result, absolute_path, self._source_label_for(absolute_path))

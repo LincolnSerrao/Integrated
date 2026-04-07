@@ -12,6 +12,7 @@ WATCH_CONFIG_FILE = CONFIG_DIR / "watch_targets.json"
 DEFAULT_WINDOWS_STAGING_DIR = Path(r"D:\\Download")
 DEFAULT_FALLBACK_STAGING_DIR = PROJECT_ROOT / "staging" / "Download"
 DEFAULT_LINUX_CAPTURE_DIR = PROJECT_ROOT / "capture" / "DownloadInbox"
+DEFAULT_LINUX_RELEASE_DIR = Path.home() / "CyberShield-Released"
 
 
 def is_linux_host() -> bool:
@@ -56,13 +57,19 @@ def get_quarantine_dir(config: dict[str, Any] | None = None) -> Path:
     return DEFAULT_FALLBACK_STAGING_DIR.resolve()
 
 
+def get_user_downloads_dir() -> Path:
+    return (Path.home() / 'Downloads').resolve()
+
+
 def get_release_dir(config: dict[str, Any] | None = None) -> Path:
     raw_value = None
     if config:
         raw_value = config.get("release_dir")
     if raw_value:
         return Path(str(raw_value)).expanduser().resolve()
-    return (Path.home() / "Downloads").resolve()
+    if is_linux_host():
+        return DEFAULT_LINUX_RELEASE_DIR.resolve()
+    return get_user_downloads_dir()
 
 
 def get_capture_inbox_dir(config: dict[str, Any] | None = None) -> Path:
@@ -73,11 +80,13 @@ def get_capture_inbox_dir(config: dict[str, Any] | None = None) -> Path:
         return Path(str(raw_value)).expanduser().resolve()
     if is_linux_host():
         return DEFAULT_LINUX_CAPTURE_DIR.resolve()
-    return (Path.home() / "Downloads").resolve()
+    return get_user_downloads_dir()
 
 
 def default_watch_directories() -> list[str]:
     defaults = [str(get_capture_inbox_dir())]
+    if is_linux_host():
+        defaults.append(str(get_user_downloads_dir()))
     return _dedupe_dirs(defaults)
 
 
@@ -125,14 +134,17 @@ def sanitize_watch_config(payload: dict[str, Any] | None) -> dict[str, Any]:
 
     selected_directories: list[str] = []
     quarantine_str = str(quarantine_dir)
+    release_str = str(release_dir)
     for raw_dir in raw_directories:
         normalized = _normalize_dir(raw_dir)
         if not normalized:
             continue
         candidate = Path(normalized)
-        if candidate == quarantine_dir:
+        if candidate == quarantine_dir or candidate == release_dir:
             continue
         if quarantine_str.startswith(f"{normalized}{os.sep}"):
+            continue
+        if release_str.startswith(f"{normalized}{os.sep}"):
             continue
         selected_directories.append(normalized)
 
@@ -206,20 +218,16 @@ def get_detected_external_directories(config: dict[str, Any] | None = None) -> l
     for mount_point in _read_proc_mounts():
         candidate = Path(mount_point)
         for root in roots:
-            if candidate == root or root in candidate.parents:
+            if candidate == root:
+                break
+            if root in candidate.parents:
                 if candidate.is_dir():
                     detected.append(str(candidate))
                 break
 
-    for root in roots:
-        if not root.exists() or not root.is_dir():
-            continue
-        try:
-            for entry in root.iterdir():
-                if entry.is_dir():
-                    detected.append(str(entry.resolve()))
-        except Exception:
-            continue
+    # Only report actual mounted directories discovered from /proc/mounts.
+    # Walking every child under /mnt or /media inflates the dashboard with
+    # ordinary folders that are not mounted devices.
 
     quarantine_dir = str(get_quarantine_dir(active_config))
     filtered = []
@@ -235,9 +243,12 @@ def get_runtime_watch_directories(config: dict[str, Any] | None = None) -> list[
     all_dirs = list(active_config.get("selected_directories", []))
     all_dirs.extend(get_detected_external_directories(active_config))
     quarantine_dir = str(get_quarantine_dir(active_config))
+    release_dir = str(get_release_dir(active_config))
     filtered = []
     for item in _dedupe_dirs(all_dirs):
         if item == quarantine_dir or quarantine_dir.startswith(f"{item}{os.sep}"):
+            continue
+        if item == release_dir or release_dir.startswith(f"{item}{os.sep}"):
             continue
         filtered.append(item)
     return filtered

@@ -15,7 +15,14 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.sandbox_status import get_sandbox_provider_name, get_sandbox_status as read_sandbox_status
-from app.scanner import SCAN_LOG_FILE, ml_stack_status, scan_file, write_scan_event
+from app.scanner import SCAN_LOG_FILE, current_model_identity, ml_stack_status, write_scan_event
+from app.linux_native_sandbox import (
+    NativeSandboxError,
+    analyze_file_in_native_sandbox,
+    get_native_sandbox_session,
+    launch_file_in_native_sandbox,
+    list_native_sandbox_sessions,
+)
 from app.monitor_state import remember_restored_path
 from app.watch_config import (
     build_watch_config_response,
@@ -23,6 +30,7 @@ from app.watch_config import (
     get_quarantine_dir,
     get_release_dir,
     get_runtime_watch_directories,
+    get_user_downloads_dir,
     load_watch_config,
     save_watch_config,
 )
@@ -87,24 +95,47 @@ def parse_event_ts(value: Any) -> datetime | None:
         return None
 
 
+def _sandbox_managed_scan_result(scan_result: dict[str, Any], target_path: Path, session: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = {**current_model_identity(), **dict(scan_result)}
+    payload["path"] = str(target_path)
+    payload["file_name"] = target_path.name
+    payload["analysis_origin"] = "project-sandbox"
+    if session:
+        payload["sandbox_session_id"] = session.get("session_id")
+        payload["sandbox_sample_copy"] = session.get("sample_copy")
+        payload["sandbox_session_root"] = session.get("session_root")
+        payload["sandbox_mode"] = session.get("mode") or "analysis"
+        payload["analysis_runtime"] = session.get("analysis_runtime")
+        payload["analysis_engine"] = session.get("analysis_engine")
+    return payload
+
+
 def process_staged_file(target_path: Path) -> dict[str, Any]:
     try:
-        scan_result = scan_file(target_path)
+        session = analyze_file_in_native_sandbox(target_path)
+        scan_result = _sandbox_managed_scan_result(session.get("scan_result") or {}, target_path, session)
+        write_scan_event(scan_result)
     except FileNotFoundError:
         scan_result = {
+            "path": str(target_path),
+            "file_name": target_path.name,
             "decision": "UNCERTAIN",
             "engine": "handoff",
             "fused_risk": 0.5,
             "reasons": [],
-            "scanner_warning": "File was handed off to the sandbox monitor before local scanning completed.",
+            "scanner_warning": "File was handed off before sandbox analysis completed.",
+            "analysis_origin": "project-sandbox",
         }
     except Exception as exc:
         scan_result = {
+            "path": str(target_path),
+            "file_name": target_path.name,
             "decision": "UNCERTAIN",
-            "engine": "none",
+            "engine": "sandbox_unavailable",
             "fused_risk": 0.5,
             "reasons": [],
             "scanner_warning": str(exc),
+            "analysis_origin": "project-sandbox",
         }
 
     overall_result = decision_to_result(scan_result.get("decision", "UNCERTAIN"))
@@ -320,13 +351,17 @@ def configure_linux_download_capture(capture_dir: Path) -> Path:
 def ensure_always_on_capture() -> None:
     current = load_watch_config()
     capture_dir = get_capture_inbox_dir(current).resolve()
+    host_downloads_dir = get_user_downloads_dir().resolve()
     release_dir = get_release_dir(current).resolve()
+    if release_dir == host_downloads_dir or str(release_dir).startswith(f"{host_downloads_dir}{os.sep}"):
+        release_dir = (Path.home() / "CyberShield-Released").resolve()
     capture_dir.mkdir(parents=True, exist_ok=True)
+    host_downloads_dir.mkdir(parents=True, exist_ok=True)
     release_dir.mkdir(parents=True, exist_ok=True)
 
     updated = {
         **current,
-        "selected_directories": [str(capture_dir)],
+        "selected_directories": [str(capture_dir), str(host_downloads_dir)],
         "capture_inbox_dir": str(capture_dir),
         "release_dir": str(release_dir),
         "watch_external_drives": True,
@@ -362,12 +397,12 @@ def get_scan_config() -> dict[str, Any]:
     provider_name = get_sandbox_provider_name()
     watch_config = build_watch_config_response(load_watch_config())
     return {
-        "mode": "multi-watch-quarantine",
+        "mode": "project-sandbox-review",
         "staging_dir": str(STAGING_DIR),
         "provider_name": provider_name,
         "message": (
             "Automatic capture is always on while the software is running. "
-            f"System downloads and mounted external drives are moved into {STAGING_DIR} for review."
+            f"Captured files are stored in {STAGING_DIR} until you review them in the project sandbox flow."
         ),
         **watch_config,
     }
@@ -433,15 +468,19 @@ def apply_strict_capture() -> dict[str, Any]:
 
     current = load_watch_config()
     capture_dir = get_capture_inbox_dir(current).resolve()
+    host_downloads_dir = get_user_downloads_dir().resolve()
     release_dir = get_release_dir(current).resolve()
+    if release_dir == host_downloads_dir or str(release_dir).startswith(f"{host_downloads_dir}{os.sep}"):
+        release_dir = (Path.home() / "CyberShield-Released").resolve()
     capture_dir.mkdir(parents=True, exist_ok=True)
+    host_downloads_dir.mkdir(parents=True, exist_ok=True)
     release_dir.mkdir(parents=True, exist_ok=True)
     user_dirs_path = configure_linux_download_capture(capture_dir)
 
     updated = save_watch_config(
         {
             **current,
-            "selected_directories": [str(capture_dir)],
+            "selected_directories": [str(capture_dir), str(host_downloads_dir)],
             "capture_inbox_dir": str(capture_dir),
             "release_dir": str(release_dir),
         }
@@ -528,10 +567,46 @@ def get_latest_scan_result() -> dict[str, Any]:
     return latest
 
 
+@app.get("/api/sandbox/sessions")
+def get_sandbox_sessions(limit: int = Query(default=20, ge=1, le=100)) -> dict[str, Any]:
+    sessions = list_native_sandbox_sessions(limit=limit)
+    return {"count": len(sessions), "items": sessions}
+
+
+@app.get("/api/sandbox/sessions/latest")
+def get_latest_sandbox_session() -> dict[str, Any]:
+    sessions = list_native_sandbox_sessions(limit=1)
+    if not sessions:
+        raise HTTPException(status_code=404, detail="No sandbox sessions available")
+    session = get_native_sandbox_session(str(sessions[0]["session_id"])) or sessions[0]
+    return session
+
+
+@app.get("/api/sandbox/sessions/{session_id}")
+def get_sandbox_session(session_id: str) -> dict[str, Any]:
+    session = get_native_sandbox_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Sandbox session not found")
+    return session
+
+
 @app.get("/api/scan/files/{file_name}")
 def download_file(file_name: str) -> FileResponse:
     file_path = resolve_managed_file(file_name)
     return FileResponse(path=file_path, filename=file_path.name, media_type="application/octet-stream")
+
+
+@app.post("/api/scan/files/{file_name}/launch-native-sandbox")
+def launch_native_sandbox_session(file_name: str) -> dict[str, Any]:
+    file_path = resolve_managed_file(file_name)
+    try:
+        session = launch_file_in_native_sandbox(file_path)
+    except NativeSandboxError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {
+        "file_name": file_path.name,
+        **session,
+    }
 
 
 @app.post("/api/scan/files/{file_name}/restore")

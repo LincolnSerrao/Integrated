@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 
 const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000';
 
-export default function ScanPage({ sandboxStatus, scanConfig, onLatestResultChange }) {
+export default function ScanPage({ sandboxStatus, scanConfig, mlStatus, onLatestResultChange }) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
   const [message, setMessage] = useState('');
@@ -11,6 +11,7 @@ export default function ScanPage({ sandboxStatus, scanConfig, onLatestResultChan
   const sandboxReady = Boolean(sandboxStatus?.ready);
   const providerName = sandboxStatus?.provider_name || 'Sandbox';
   const quarantineDir = scanConfig?.quarantine_dir || scanConfig?.staging_dir || 'staging/Download';
+  const modelName = mlStatus?.model_name || 'Cyber Shield Zero-Day Detector';
 
   const currentStep = useMemo(() => {
     if (isUploading) return 2;
@@ -25,7 +26,7 @@ export default function ScanPage({ sandboxStatus, scanConfig, onLatestResultChan
 
     setSelectedFile(file);
     setResult(null);
-    setMessage('Uploading file to quarantine...');
+    setMessage('Uploading file to review storage...');
     setIsUploading(true);
 
     const formData = new FormData();
@@ -60,43 +61,43 @@ export default function ScanPage({ sandboxStatus, scanConfig, onLatestResultChan
   };
 
   return (
-    <section className='page'>
+    <section className='page scan-page'>
       <h2>Scan Page</h2>
       <p className='page-help'>
         This page is only for manually checking files that are already on your system. Live capture of downloads
         and file transfers happens through the Dashboard capture locations, not here.
       </p>
 
-      <div className={'card status-note ' + (sandboxReady ? 'good' : 'warn')}>
+      <div className={'card status-note spacious-card ' + (sandboxReady ? 'good' : 'warn')}>
         <h3>{providerName} Status</h3>
         <p>{sandboxStatus?.message || ('Checking ' + providerName + ' availability...')}</p>
       </div>
 
-      <div className='card scan-config-card'>
+      <div className='card scan-config-card spacious-card'>
         <h3>Manual File Check Only</h3>
         <p className='muted-text'>
-          Choose a file from anywhere on this system. It will be copied into <strong>{quarantineDir}</strong> and scanned
-          without changing your capture-directory settings.
+          Choose a file from anywhere on this system. It will be copied into <strong>{quarantineDir}</strong> and analyzed with
+          <strong> {modelName}</strong> without changing your capture-directory settings.
         </p>
       </div>
 
-      <div className='card upload-card'>
+      <div className='card upload-card spacious-card'>
         <h3>Select A File To Check</h3>
-        <label htmlFor='scanFileInput' className='upload-dropzone'>
+        <label htmlFor='scanFileInput' className='upload-dropzone roomy-dropzone'>
           <span>{isUploading ? 'Uploading...' : 'Click here to choose a file'}</span>
           <span className='muted'>Manual scan only. Live capture settings are managed on Dashboard.</span>
           <input id='scanFileInput' type='file' onChange={handleFileChange} disabled={isUploading} />
         </label>
         {selectedFile && <p className='scan-file'>Selected: {selectedFile.name}</p>}
         {message && <p className='scan-message'>{message}</p>}
-        {result?.staging_path && <p className='scan-meta'>Quarantine path: {result.staging_path}</p>}
+        {result?.staging_path && <p className='scan-meta'>Review path: {result.staging_path}</p>}
       </div>
 
-      <ol className='step-list'>
+      <ol className='step-list roomy-steps'>
         <li className={'step ' + (currentStep >= 1 ? 'done' : '')}>1. File Selected</li>
-        <li className={'step ' + (currentStep === 2 ? 'current' : currentStep > 2 ? 'done' : '')}>2. Copied To Quarantine</li>
-        <li className={'step ' + (currentStep >= 3 ? 'done' : '')}>3. Static Scan Started</li>
-        <li className={'step ' + (currentStep >= 4 ? 'done' : '')}>4. Heuristic Checks</li>
+        <li className={'step ' + (currentStep === 2 ? 'current' : currentStep > 2 ? 'done' : '')}>2. Copied To Review Storage</li>
+        <li className={'step ' + (currentStep >= 3 ? 'done' : '')}>3. Sandbox Analysis Started</li>
+        <li className={'step ' + (currentStep >= 4 ? 'done' : '')}>4. Feature Extraction</li>
         <li className={'step ' + (currentStep >= 5 ? 'done' : '')}>5. Risk Scored</li>
         <li className={'step ' + (currentStep >= 6 ? 'done' : '')}>6. Result Ready</li>
       </ol>
