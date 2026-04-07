@@ -161,7 +161,7 @@ def _combine_scores(static_prob: float, behavior_risk: float | None, fusion_alph
 
 def write_scan_event(payload: dict[str, Any]) -> dict[str, Any]:
     event = dict(payload)
-    event.setdefault("ts", datetime.utcnow().isoformat(timespec="seconds") + "Z")
+    event.setdefault("ts", datetime.utcnow().isoformat(timespec="milliseconds") + "Z")
     with SCAN_LOG_FILE.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event) + "\n")
     return event

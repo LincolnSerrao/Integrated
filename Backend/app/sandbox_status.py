@@ -8,6 +8,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+from app.watch_config import get_quarantine_dir, get_runtime_watch_directories, is_linux_host
+
 try:
     import winreg
 except Exception:  # pragma: no cover - Windows-only helper
@@ -24,6 +26,7 @@ WINDOWS_11_BUILD_FLOOR = 22000
 DEFAULT_SANDBOX_PROVIDER = "windows-sandbox"
 VIRTUALBOX_PROVIDER = "virtualbox"
 WINDOWS_SANDBOX_PROVIDER = "windows-sandbox"
+LINUX_QUARANTINE_PROVIDER = "linux-quarantine"
 COMMON_VBOXMANAGE_PATHS = (
     Path(r"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"),
     Path(r"C:\Program Files (x86)\Oracle\VirtualBox\VBoxManage.exe"),
@@ -92,6 +95,10 @@ def _normalize_provider_name(value: str | None) -> str:
         "virtual-box": VIRTUALBOX_PROVIDER,
         "virtual_box": VIRTUALBOX_PROVIDER,
         "vbox": VIRTUALBOX_PROVIDER,
+        "linux": LINUX_QUARANTINE_PROVIDER,
+        "linux_quarantine": LINUX_QUARANTINE_PROVIDER,
+        "local": LINUX_QUARANTINE_PROVIDER,
+        "local-quarantine": LINUX_QUARANTINE_PROVIDER,
     }
     return aliases.get(normalized, normalized or DEFAULT_SANDBOX_PROVIDER)
 
@@ -100,6 +107,9 @@ def get_configured_sandbox_provider() -> str:
     explicit = os.environ.get("SANDBOX_PROVIDER")
     if explicit:
         return _normalize_provider_name(explicit)
+
+    if is_linux_host():
+        return LINUX_QUARANTINE_PROVIDER
 
     if get_virtualbox_vm_name():
         return VIRTUALBOX_PROVIDER
@@ -111,6 +121,8 @@ def get_sandbox_provider_name(provider: str | None = None) -> str:
     resolved = _normalize_provider_name(provider or get_configured_sandbox_provider())
     if resolved == VIRTUALBOX_PROVIDER:
         return "VirtualBox"
+    if resolved == LINUX_QUARANTINE_PROVIDER:
+        return "Local Quarantine"
     return "Windows Sandbox"
 
 
@@ -174,6 +186,31 @@ def get_windows_sandbox_status() -> dict[str, Any]:
         "executable_found": binary_present,
         "executable_path": exe_path,
         "executable_source": source,
+        "message": message,
+    }
+
+
+def get_linux_quarantine_status() -> dict[str, Any]:
+    provider_name = get_sandbox_provider_name(LINUX_QUARANTINE_PROVIDER)
+    quarantine_dir = get_quarantine_dir()
+    active_watch_directories = get_runtime_watch_directories()
+    ready = bool(is_linux_host())
+    if ready:
+        message = (
+            f"{provider_name} is active. New files from your selected folders and mounted external drives "
+            f"will be moved into {quarantine_dir} for review in the app."
+        )
+    else:
+        message = f"{provider_name} is only available on Linux hosts."
+
+    return {
+        "provider": LINUX_QUARANTINE_PROVIDER,
+        "provider_name": provider_name,
+        "ready": ready,
+        "supported": ready,
+        "configured": True,
+        "quarantine_dir": str(quarantine_dir),
+        "active_watch_directories": active_watch_directories,
         "message": message,
     }
 
@@ -414,4 +451,6 @@ def get_sandbox_status() -> dict[str, Any]:
     provider = get_configured_sandbox_provider()
     if provider == VIRTUALBOX_PROVIDER:
         return get_virtualbox_status()
+    if provider == LINUX_QUARANTINE_PROVIDER:
+        return get_linux_quarantine_status()
     return get_windows_sandbox_status()

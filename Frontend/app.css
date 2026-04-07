@@ -551,3 +551,75 @@ td {
     grid-template-columns: 1fr;
   }
 }
+
+.watch-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.path-input {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  padding: 10px 12px;
+  font-size: 1rem;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  color: var(--text);
+}
+
+.watch-section {
+  margin-top: 18px;
+}
+
+.watch-path-list {
+  display: grid;
+  gap: 10px;
+}
+
+.compact-list {
+  gap: 8px;
+}
+
+.path-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.path-chip {
+  margin: 0;
+  border: 1px solid var(--chip-border);
+  background: var(--chip-bg);
+  color: var(--chip-text);
+  padding: 8px 10px;
+  word-break: break-all;
+}
+
+.btn.secondary {
+  background: var(--surface-soft);
+}
+
+.btn.ghost {
+  padding: 8px 12px;
+}
+
+@media (max-width: 768px) {
+  .watch-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .path-row {
+    align-items: stretch;
+  }
+}

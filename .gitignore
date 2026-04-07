@@ -68,3 +68,8 @@ dist/
 
 .local/
 node_modules/
+Backend/app/config/*.json
+Backend/app/state/*.json
+# Capture runtime data
+capture/
+staging/

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 
 const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000';
 const CLEARED_RESULT_KEY = 'clearedResultMarker';
+const REVIEW_PROMPT_KEY = 'reviewPromptMarker';
 const LATEST_POLL_INTERVAL_MS = 5000;
 
 function resultClass(result) {
@@ -13,13 +14,13 @@ function resultClass(result) {
 
 function getErrorMessage(error) {
   if (error instanceof TypeError) {
-    return `Cannot reach backend at ${API_BASE_URL}`;
+    return 'Cannot reach backend at ' + API_BASE_URL;
   }
   return error?.message || 'Request failed';
 }
 
 function buildMarker(payload) {
-  return `${payload?.file_name || ''}:${payload?.ts || ''}:${payload?.post_action || ''}`;
+  return (payload?.file_name || '') + ':' + (payload?.ts || '') + ':' + (payload?.post_action || '');
 }
 
 function buildLatestPayload(payload) {
@@ -29,6 +30,11 @@ function buildLatestPayload(payload) {
     overall_result: payload.overall_result,
     status: payload.post_action || 'logged'
   };
+}
+
+function isActionableLatest(payload) {
+  if (!payload) return false;
+  return !payload.post_action || payload.post_action === 'manual_review_required' || payload.post_action === 'logged';
 }
 
 export default function ResultPage({ overallResult, onLatestResultChange }) {
@@ -52,9 +58,14 @@ export default function ResultPage({ overallResult, onLatestResultChange }) {
 
     const loadLatest = async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/scan/latest`);
+        const response = await fetch(API_BASE_URL + '/api/scan/latest');
         if (!response.ok) return;
         const payload = await response.json();
+        if (!isActionableLatest(payload)) {
+          setFileInfo(null);
+          setMessage('No quarantined file is waiting for review in this session.');
+          return;
+        }
         const clearedMarker = localStorage.getItem(CLEARED_RESULT_KEY);
         const marker = buildMarker(payload);
         if (clearedMarker && clearedMarker === marker) {
@@ -64,7 +75,7 @@ export default function ResultPage({ overallResult, onLatestResultChange }) {
         setIsManualUpload(false);
         setMessage(payload.message || '');
       } catch (_) {
-        // ignore latest-result failures on initial render
+        // ignore initial latest failures
       }
     };
 
@@ -80,11 +91,22 @@ export default function ResultPage({ overallResult, onLatestResultChange }) {
       }
 
       try {
-        const response = await fetch(`${API_BASE_URL}/api/scan/latest`);
-        if (!response.ok) return;
+        const response = await fetch(API_BASE_URL + '/api/scan/latest');
+        if (!response.ok) {
+          if (response.status === 404 && active) {
+            setFileInfo(null);
+            setMessage('No quarantined file is waiting for review in this session.');
+          }
+          return;
+        }
 
         const payload = await response.json();
         if (!active) return;
+        if (!isActionableLatest(payload)) {
+          setFileInfo(null);
+          setMessage('No quarantined file is waiting for review in this session.');
+          return;
+        }
 
         const clearedMarker = localStorage.getItem(CLEARED_RESULT_KEY);
         const marker = buildMarker(payload);
@@ -96,7 +118,7 @@ export default function ResultPage({ overallResult, onLatestResultChange }) {
         setIsManualUpload(false);
         setMessage(payload.message || '');
       } catch (_) {
-        // ignore polling failures and keep current UI state
+        // keep current UI
       }
     };
 
@@ -115,29 +137,12 @@ export default function ResultPage({ overallResult, onLatestResultChange }) {
 
     const refresh = async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/scan/results/${encodeURIComponent(fileName)}`);
+        const response = await fetch(API_BASE_URL + '/api/scan/results/' + encodeURIComponent(fileName));
         if (response.status === 404) {
           localStorage.removeItem('latestSandboxFile');
           setFileInfo(null);
           setIsManualUpload(false);
-
-          try {
-            const latestResponse = await fetch(`${API_BASE_URL}/api/scan/latest`);
-            if (latestResponse.ok) {
-              const latestPayload = await latestResponse.json();
-              const clearedMarker = localStorage.getItem(CLEARED_RESULT_KEY);
-              const marker = buildMarker(latestPayload);
-              if (!clearedMarker || clearedMarker !== marker) {
-                setFileInfo(buildLatestPayload(latestPayload));
-                setMessage(latestPayload.message || '');
-                return;
-              }
-            }
-          } catch (_) {
-            // ignore latest-result fallback failure
-          }
-
-          setMessage('No file is currently available in sandbox.');
+          setMessage('No file is currently available in quarantine.');
           return;
         }
         if (!response.ok) return;
@@ -146,7 +151,7 @@ export default function ResultPage({ overallResult, onLatestResultChange }) {
         setIsManualUpload(true);
         localStorage.setItem('latestSandboxFile', JSON.stringify(payload));
       } catch (_) {
-        // keep cached result when backend is unavailable
+        // keep cached result
       }
     };
 
@@ -161,29 +166,34 @@ export default function ResultPage({ overallResult, onLatestResultChange }) {
   const hasFile = Boolean(fileInfo?.file_name);
   const postAction = scan?.post_action || null;
   const risk = typeof scan?.fused_risk === 'number' ? scan.fused_risk : null;
-  const score = !hasFile ? null : (risk === null ? 50 : Math.max(1, Math.min(99, Math.round((1 - risk) * 100))));
+  const riskPercent = risk === null ? null : Math.max(0, Math.min(100, risk * 100));
   const resultText = hasFile ? (fileInfo?.overall_result || overallResult) : 'No file selected';
   const warningText = scan?.scanner_warning || '';
-  const showSaveButton = hasFile && !isManualUpload && postAction !== 'auto_saved_safe' && postAction !== 'auto_deleted_blocked';
-  const showDeleteButton = hasFile && ((!isManualUpload && postAction !== 'auto_saved_safe' && postAction !== 'auto_deleted_blocked') || (isManualUpload && !postAction && resultText !== 'Safe'));
+  const originalPath = scan?.original_path || null;
+  const watchSource = scan?.watch_source || null;
+  const isPendingQuarantineItem = hasFile && !isManualUpload && (!postAction || postAction === 'manual_review_required' || postAction === 'logged');
+  const isSafePendingItem = isPendingQuarantineItem && resultText === 'Safe';
+  const isUnsafePendingItem = isPendingQuarantineItem && resultText !== 'Safe';
+  const showSaveButton = hasFile && isManualUpload;
+  const showRestoreButton = isSafePendingItem;
+  const showOverrideButton = isUnsafePendingItem;
+  const showDeleteButton = (hasFile && isManualUpload) || isPendingQuarantineItem;
   const showClearButton = hasFile;
-  const canDelete = showDeleteButton;
 
   const tags = useMemo(() => {
     if (!scan) {
-      return ['Sandbox: Pending', 'Threat Pattern: Pending', 'Hidden Data: Pending', 'Adversarial Check: Pending'];
+      return ['Quarantine: Idle', 'Threat Pattern: Idle', 'Hidden Data: Idle', 'Adversarial Check: Idle'];
     }
 
-    const decisionTag = `Sandbox: ${scan.decision || 'UNCERTAIN'}`;
-    const engineTag = `Engine: ${scan.engine || 'unknown'}`;
-    const riskTag = risk === null ? 'Risk: N/A' : `Risk: ${(risk * 100).toFixed(2)}%`;
+    const decisionTag = 'Decision: ' + (scan.decision || 'UNCERTAIN');
+    const engineTag = 'Engine: ' + (scan.engine || 'unknown');
     const warnTag = scan.scanner_warning ? 'Model: Fallback mode' : 'Model: Active';
-    return [decisionTag, engineTag, riskTag, warnTag];
+    return [decisionTag, engineTag, warnTag];
   }, [scan, risk]);
 
   const saveFile = async () => {
     if (!fileInfo?.file_name) {
-      setMessage('No sandbox file available. Upload from Scan Page first.');
+      setMessage('No quarantine file available. Upload from Scan Page first.');
       return;
     }
 
@@ -191,7 +201,7 @@ export default function ResultPage({ overallResult, onLatestResultChange }) {
     setMessage('Preparing file for save...');
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/scan/files/${encodeURIComponent(fileInfo.file_name)}`);
+      const response = await fetch(API_BASE_URL + '/api/scan/files/' + encodeURIComponent(fileInfo.file_name));
       if (!response.ok) {
         const payload = await response.json();
         throw new Error(payload?.detail || 'Failed to fetch file');
@@ -214,11 +224,11 @@ export default function ResultPage({ overallResult, onLatestResultChange }) {
         URL.revokeObjectURL(url);
       }
 
-      await fetch(`${API_BASE_URL}/api/scan/files/${encodeURIComponent(fileInfo.file_name)}`, { method: 'DELETE' });
+      await fetch(API_BASE_URL + '/api/scan/files/' + encodeURIComponent(fileInfo.file_name), { method: 'DELETE' });
       localStorage.removeItem('latestSandboxFile');
       setFileInfo(null);
       setIsManualUpload(false);
-      setMessage('File saved and removed from sandbox.');
+      setMessage('File saved and removed from quarantine.');
     } catch (error) {
       setMessage(getErrorMessage(error));
     } finally {
@@ -226,17 +236,158 @@ export default function ResultPage({ overallResult, onLatestResultChange }) {
     }
   };
 
+  const restoreFile = async (targetDirectory = null, progressMessage = 'Restoring file to its source location...') => {
+    if (!fileInfo?.file_name) {
+      setMessage('No quarantined file available to restore.');
+      return false;
+    }
+
+    setIsBusy(true);
+    setMessage(progressMessage);
+
+    try {
+      const response = await fetch(API_BASE_URL + '/api/scan/files/' + encodeURIComponent(fileInfo.file_name) + '/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_directory: targetDirectory })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload?.detail || 'Restore failed');
+      }
+
+      localStorage.removeItem('latestSandboxFile');
+      setFileInfo(null);
+      setIsManualUpload(false);
+      setMessage('File restored to ' + payload.restored_path);
+      return true;
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+      return false;
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const downloadToUserChosenLocation = async (progressMessage) => {
+    if (!fileInfo?.file_name) {
+      setMessage('No quarantined file available to release.');
+      return false;
+    }
+
+    setIsBusy(true);
+    setMessage(progressMessage);
+
+    try {
+      const response = await fetch(API_BASE_URL + '/api/scan/files/' + encodeURIComponent(fileInfo.file_name));
+      if (!response.ok) {
+        const payload = await response.json();
+        throw new Error(payload?.detail || 'Failed to fetch quarantined file');
+      }
+
+      const blob = await response.blob();
+      if (window.showSaveFilePicker) {
+        const handle = await window.showSaveFilePicker({ suggestedName: fileInfo.file_name });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+      } else {
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = fileInfo.file_name;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+      }
+
+      const deleteResponse = await fetch(API_BASE_URL + '/api/scan/files/' + encodeURIComponent(fileInfo.file_name), {
+        method: 'DELETE'
+      });
+      if (!deleteResponse.ok) {
+        const payload = await deleteResponse.json();
+        throw new Error(payload?.detail || 'Failed to clear quarantine after save');
+      }
+
+      localStorage.removeItem('latestSandboxFile');
+      setFileInfo(null);
+      setIsManualUpload(false);
+      setMessage('File saved to your chosen location and removed from quarantine.');
+      return true;
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+      return false;
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const chooseReleaseDirectory = async (progressMessage) => {
+    if (window.showSaveFilePicker) {
+      return downloadToUserChosenLocation(progressMessage);
+    }
+
+    const pickerResponse = await fetch(API_BASE_URL + '/api/scan/pick-release-directory', { method: 'POST' });
+    const pickerPayload = await pickerResponse.json();
+    if (!pickerResponse.ok) {
+      throw new Error(pickerPayload?.detail || 'Directory picker failed');
+    }
+
+    const targetDirectory = String(pickerPayload.directory || '').trim();
+    if (!targetDirectory) {
+      setMessage('No save folder selected. File is still in quarantine.');
+      return false;
+    }
+
+    return restoreFile(targetDirectory, progressMessage);
+  };
+
+  const promptSafeRelease = async () => {
+    if (!fileInfo?.file_name) return;
+    const shouldChooseDestination = window.confirm(
+      'This file looks safe. Choose where to save it now?'
+    );
+    if (!shouldChooseDestination) {
+      setMessage('Safe file is waiting in quarantine until you choose a destination or delete it.');
+      return;
+    }
+
+    try {
+      await chooseReleaseDirectory('Moving safe file to your chosen folder...');
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    }
+  };
+
+  const promptUnsafeRelease = async () => {
+    if (!fileInfo?.file_name) return;
+    const shouldOverride = window.confirm(
+      'Warning: this file was flagged as ' + resultText + '. Release it anyway to a chosen folder?'
+    );
+    if (!shouldOverride) {
+      await deleteFile();
+      return;
+    }
+
+    try {
+      await chooseReleaseDirectory('Releasing unsafe file to your chosen folder...');
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    }
+  };
+
   const deleteFile = async () => {
     if (!fileInfo?.file_name) {
-      setMessage('No sandbox file available to delete.');
+      setMessage('No quarantine file available to delete.');
       return;
     }
 
     setIsBusy(true);
-    setMessage('Deleting file from sandbox...');
+    setMessage('Deleting file from quarantine...');
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/scan/files/${encodeURIComponent(fileInfo.file_name)}`, {
+      const response = await fetch(API_BASE_URL + '/api/scan/files/' + encodeURIComponent(fileInfo.file_name), {
         method: 'DELETE'
       });
       const payload = await response.json();
@@ -247,11 +398,7 @@ export default function ResultPage({ overallResult, onLatestResultChange }) {
       localStorage.removeItem('latestSandboxFile');
       setFileInfo(null);
       setIsManualUpload(false);
-      setMessage(
-        isManualUpload
-          ? `Deleted sandbox copy: ${payload.file_name}. Original uploaded file remains in its source folder.`
-          : `Deleted: ${payload.file_name}`
-      );
+      setMessage('Deleted: ' + payload.file_name);
     } catch (error) {
       setMessage(getErrorMessage(error));
     } finally {
@@ -268,46 +415,82 @@ export default function ResultPage({ overallResult, onLatestResultChange }) {
     setMessage('Results cleared.');
   };
 
-  return (
-    <section className="page">
-      <h2>Result Page</h2>
-      <p className="page-help">This page tells you clearly if your file is safe or not.</p>
+  useEffect(() => {
+    if (!hasFile || isManualUpload || !isPendingQuarantineItem || isBusy) {
+      return;
+    }
 
-      <div className="result-grid">
-        <article className="card result-main">
-          <h3>Safety Score</h3>
-          <p className="score">
-            {score === null ? '--' : score} <span>/100</span>
+    const marker = buildMarker(scan || fileInfo || {});
+    if (!marker || localStorage.getItem(REVIEW_PROMPT_KEY) === marker) {
+      return;
+    }
+
+    localStorage.setItem(REVIEW_PROMPT_KEY, marker);
+
+    if (isSafePendingItem) {
+      promptSafeRelease();
+      return;
+    }
+
+    promptUnsafeRelease();
+  }, [fileInfo, hasFile, isBusy, isManualUpload, isPendingQuarantineItem, isSafePendingItem, resultText, scan]);
+
+  return (
+    <section className='page'>
+      <h2>Result Page</h2>
+      <p className='page-help'>This page shows the current quarantine result for this session, not old historical items.</p>
+
+      <div className='result-grid'>
+        <article className='card result-main'>
+          <h3>Risk Estimate</h3>
+          <p className='score'>
+            {riskPercent === null ? '--' : riskPercent.toFixed(2)} <span>%</span>
           </p>
           <p className={resultClass(resultText)}>Result: {resultText}</p>
-          <p className="muted-text">Higher score means lower risk.</p>
+          <p className='muted-text'>This value comes directly from the backend fused risk output.</p>
         </article>
 
-        <article className="card result-layers">
+        <article className='card result-layers'>
           <h3>What We Checked</h3>
-          <div className="tag-list">
+          <div className='tag-list'>
             {tags.map((tag) => (
-              <span key={tag} className="tag ok">{tag}</span>
+              <span key={tag} className='tag ok'>{tag}</span>
             ))}
           </div>
-          {warningText && <p className="scan-message">{warningText}</p>}
+          {warningText && <p className='scan-message'>{warningText}</p>}
+          {watchSource && <p className='scan-meta'>Captured from: {watchSource}</p>}
+          {originalPath && <p className='scan-meta'>Original path: {originalPath}</p>}
+          {isSafePendingItem && <p className='scan-meta'>Safe file waiting for destination selection before release.</p>}
+          {isUnsafePendingItem && <p className='scan-meta'>Unsafe file remains quarantined until you delete it or clear the result.</p>}
         </article>
       </div>
 
-      <div className="action-row">
+      <div className='action-row'>
         {showSaveButton && (
-          <button type="button" className="btn" onClick={saveFile} disabled={isBusy || !hasFile}>Save</button>
+          <button type='button' className='btn' onClick={saveFile} disabled={isBusy || !hasFile}>Save</button>
+        )}
+        {showRestoreButton && (
+          <button
+            type='button'
+            className='btn'
+            onClick={() => promptSafeRelease()}
+            disabled={isBusy || !hasFile}
+          >
+            Choose Save Folder
+          </button>
+        )}
+        {showOverrideButton && (
+          <button type='button' className='btn warn' onClick={() => promptUnsafeRelease()} disabled={isBusy || !hasFile}>Release Anyway</button>
         )}
         {showClearButton && (
-          <button type="button" className="btn" onClick={clearResults} disabled={isBusy}>Clear Results</button>
+          <button type='button' className='btn secondary' onClick={clearResults} disabled={isBusy}>Clear Results</button>
         )}
         {showDeleteButton && (
-          <button type="button" className="btn danger" onClick={deleteFile} disabled={isBusy || !canDelete}>Delete</button>
+          <button type='button' className='btn danger' onClick={deleteFile} disabled={isBusy || !hasFile}>Delete</button>
         )}
       </div>
-      {fileInfo?.file_name && <p className="scan-file">Sandbox file: {fileInfo.file_name}</p>}
-      {message && <p className="scan-message">{message}</p>}
+      {fileInfo?.file_name && <p className='scan-file'>Quarantine file: {fileInfo.file_name}</p>}
+      {message && <p className='scan-message'>{message}</p>}
     </section>
   );
 }
-

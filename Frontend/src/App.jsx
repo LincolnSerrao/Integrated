@@ -8,6 +8,7 @@ import ResultPage from './pages/ResultPage';
 import LogsPage from './pages/LogsPage';
 
 const API_BASE_URL = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000';
+const AUTO_OPEN_RESULT_KEY = 'autoOpenResultMarker';
 
 const pages = [
   { id: 'dashboard', label: 'Dashboard' },
@@ -34,6 +35,15 @@ function mapResultToSystemStatus(result, sandboxStatus) {
   return 'Safe';
 }
 
+function isActionableLatest(payload) {
+  if (!payload) return false;
+  return !payload.post_action || payload.post_action === 'manual_review_required' || payload.post_action === 'logged';
+}
+
+function buildLatestMarker(payload) {
+  return (payload?.file_name || '') + ':' + (payload?.ts || '') + ':' + (payload?.post_action || '');
+}
+
 export default function App() {
   const [activePage, setActivePage] = useState('dashboard');
   const [theme, setTheme] = useState('dark');
@@ -43,7 +53,6 @@ export default function App() {
   const [latestOverallResult, setLatestOverallResult] = useState(() => readCachedOverallResult());
   const systemStatus = mapResultToSystemStatus(latestOverallResult, sandboxStatus);
 
-  // remember theme preference
   React.useEffect(() => {
     document.body.classList.toggle('light-mode', theme === 'light');
     localStorage.setItem('theme', theme);
@@ -62,17 +71,16 @@ export default function App() {
     const loadSystemState = async () => {
       try {
         const [sandboxResponse, latestResponse, configResponse, mlResponse] = await Promise.allSettled([
-          fetch(`${API_BASE_URL}/api/scan/sandbox-status`),
-          fetch(`${API_BASE_URL}/api/scan/latest`),
-          fetch(`${API_BASE_URL}/api/scan/config`),
-          fetch(`${API_BASE_URL}/api/scan/ml-status`)
+          fetch(API_BASE_URL + '/api/scan/sandbox-status'),
+          fetch(API_BASE_URL + '/api/scan/latest'),
+          fetch(API_BASE_URL + '/api/scan/config'),
+          fetch(API_BASE_URL + '/api/scan/ml-status')
         ]);
 
         if (!active) return;
 
         if (sandboxResponse.status === 'fulfilled' && sandboxResponse.value.ok) {
-          const payload = await sandboxResponse.value.json();
-          setSandboxStatus(payload);
+          setSandboxStatus(await sandboxResponse.value.json());
         } else {
           setSandboxStatus(null);
         }
@@ -80,22 +88,28 @@ export default function App() {
         if (latestResponse.status === 'fulfilled' && latestResponse.value.ok) {
           const payload = await latestResponse.value.json();
           setLatestOverallResult(payload?.overall_result || null);
+          if (isActionableLatest(payload)) {
+            const marker = buildLatestMarker(payload);
+            const previousMarker = localStorage.getItem(AUTO_OPEN_RESULT_KEY);
+            if (marker && marker !== previousMarker) {
+              localStorage.setItem(AUTO_OPEN_RESULT_KEY, marker);
+              setActivePage('result');
+            }
+          }
         } else {
           setLatestOverallResult((current) => current ?? readCachedOverallResult());
         }
 
-        if (mlResponse.status === 'fulfilled' && mlResponse.value.ok) {
-          const payload = await mlResponse.value.json();
-          setMlStatus(payload);
-        } else {
-          setMlStatus(null);
-        }
-
         if (configResponse.status === 'fulfilled' && configResponse.value.ok) {
-          const payload = await configResponse.value.json();
-          setScanConfig(payload);
+          setScanConfig(await configResponse.value.json());
         } else {
           setScanConfig(null);
+        }
+
+        if (mlResponse.status === 'fulfilled' && mlResponse.value.ok) {
+          setMlStatus(await mlResponse.value.json());
+        } else {
+          setMlStatus(null);
         }
       } catch (_) {
         if (!active) return;
@@ -115,7 +129,7 @@ export default function App() {
   }, []);
 
   const toggleTheme = () => {
-    setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
+    setTheme((currentTheme) => (currentTheme === 'dark' ? 'light' : 'dark'));
   };
 
   function statusClass(status) {
@@ -126,14 +140,13 @@ export default function App() {
   }
 
   const activeContent = useMemo(() => {
-    const stagingDir = scanConfig?.staging_dir || 'D:\\Download';
-
     if (activePage === 'dashboard') {
       return (
         <DashboardPage
           sandboxStatus={sandboxStatus}
           mlStatus={mlStatus}
-          stagingDir={stagingDir}
+          scanConfig={scanConfig}
+          onScanConfigChange={setScanConfig}
         />
       );
     }
@@ -141,7 +154,7 @@ export default function App() {
       return (
         <ScanPage
           sandboxStatus={sandboxStatus}
-          stagingDir={stagingDir}
+          scanConfig={scanConfig}
           onLatestResultChange={setLatestOverallResult}
         />
       );
@@ -155,26 +168,26 @@ export default function App() {
       );
     }
     return <LogsPage />;
-  }, [activePage, latestOverallResult, sandboxStatus, scanConfig]);
+  }, [activePage, latestOverallResult, mlStatus, sandboxStatus, scanConfig]);
 
   return (
-    <div className="app-shell">
+    <div className='app-shell'>
       <Header systemStatus={systemStatus} statusClass={statusClass} />
 
-      <div className="main-layout">
-        <aside className="sidebar">
+      <div className='main-layout'>
+        <aside className='sidebar'>
           <NavTabs pages={pages} activePage={activePage} onPageChange={setActivePage} />
           <button
-            type="button"
-            className="theme-toggle"
+            type='button'
+            className='theme-toggle'
             onClick={toggleTheme}
             style={{ marginTop: '20px' }}
           >
-            {theme === 'dark' ? '☀️ Light mode' : '🌙 Dark mode'}
+            {theme === 'dark' ? 'Light mode' : 'Dark mode'}
           </button>
         </aside>
 
-        <main className="content">{activeContent}</main>
+        <main className='content'>{activeContent}</main>
       </div>
     </div>
   );
