@@ -1,110 +1,129 @@
 # Cyber Shield Innovators
 
-Cyber Shield Innovators is a Windows-first malware triage project with three main parts:
-- a React frontend for uploads, status, results, and logs
-- a FastAPI backend for file intake, scan orchestration, and status APIs
-- a host-side sandbox monitor that watches a staging folder and hands files into an isolated sandbox session
+Cyber Shield Innovators is a malware triage project with three main parts:
+- a React frontend for status, review results, and logs
+- a FastAPI backend for scan orchestration, quarantine APIs, and ML status
+- a host-side sandbox monitor that captures downloads into quarantine before release
 
-The current preferred sandbox backend is `VirtualBox` with a Windows guest VM. The project itself stays on the host machine. Only the suspicious file review step happens inside the VM through a shared folder.
+The current Linux flow is quarantine-first and always on while the software is running.
+Downloads are redirected into a controlled capture inbox, moved into quarantine, analyzed, and only released after user review.
 
 ## What the project does
-- Monitors a staging/download folder for completed files
+- Redirects Linux downloads into a controlled capture inbox
+- Watches mounted external drives while the software is running
+- Moves detected files into quarantine before the user receives them
 - Scans files with the backend and optional ML pipeline
-- Moves queued files into an isolated sandbox review session
-- Lets the user approve or reject files from inside the sandbox guest
-- Restores approved files to Downloads or drops rejected files
+- Lets the user release safe files to a chosen location
+- Lets the user override and release unsafe files only after an explicit warning
+- Deletes quarantined copies after release or rejection while keeping scan history in logs
 - Exposes a frontend dashboard, scan page, result page, and logs page
 
 ## Project structure
 - [Frontend](./Frontend) - React + Vite UI
 - [Backend](./Backend) - FastAPI API and scanner logic
-- [sandbox](./sandbox) - sandbox monitor, launcher scripts, and sandbox docs
+- [sandbox](./sandbox) - sandbox monitor and related docs
+
+## Current Linux behavior
+- Capture is always on whenever the backend and sandbox monitor are running
+- Linux downloads are redirected to `capture/DownloadInbox`
+- Quarantined files are stored under `staging/Download`
+- Safe files are released only after the user chooses where to save them
+- Unsafe files stay in quarantine unless the user explicitly overrides the warning
+- Analysis history remains available in backend logs even after the quarantined file is deleted
+
+Important note:
+This does not mean the app can inspect every possible filesystem event on Linux. The current always-on coverage is:
+- system downloads that honor the Linux download directory
+- mounted external drives watched by the monitor
+
+Apps that were already open before the software started may need to be restarted so they pick up the redirected download directory.
 
 ## Requirements
 
-### Host requirements
-- Windows 10 or Windows 11
-- PowerShell
-- Python 3.10+ for the basic backend and sandbox monitor
-- `py -3.14` available if you want to use the current launcher scripts as-is
+### Linux host requirements
+- Arch Linux or another modern Linux distribution
+- Python 3.10+
 - Node.js 18+ and `npm`
-- VirtualBox 7.x installed on the host
-
-### VirtualBox requirements
-- A Windows guest VM
-- Guest Additions installed in the guest
-- A permanent shared folder named `CyberShieldSandbox`
-- That shared folder mapped to host path `C:\Sandbox_VM_Input`
+- KDE if you want native folder pickers through `kdialog`
 
 ### Optional ML requirements
-- Separate Python environment recommended
-- Python 3.11 (64-bit) is the most practical option for the optional ML stack
+- Python 3.11 is the most practical option for the optional ML stack
 - See [Backend/requirements-ml.txt](./Backend/requirements-ml.txt)
 
 ## Install
 
 ### Backend
-```powershell
+```bash
 cd Backend
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
 ### Frontend
-```powershell
+```bash
 cd Frontend
 npm install
 ```
 
 ### Sandbox monitor
-```powershell
+```bash
 cd sandbox
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+pip install -r ../Backend/requirements.txt
 ```
 
 ## Run the project
-From the sandbox folder:
+Open three terminals from the project root.
 
-```powershell
-cd sandbox
-$env:SANDBOX_PROVIDER = "virtualbox"
-$env:VIRTUALBOX_VM_NAME = "Win11-Analysis-01"
-$env:VIRTUALBOX_GUEST_BASE_PATH = "\\VBOXSVR\CyberShieldSandbox"
-powershell -ExecutionPolicy Bypass -File .\scripts\Start-BackendAndSandbox.ps1
+### Terminal 1: backend
+```bash
+cd /home/lincoln/Desktop/integrated/Backend
+source .venv-ml/bin/activate
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-This starts:
-- the backend
-- the sandbox monitor
-- the frontend
-- the VirtualBox VM window automatically when VirtualBox mode is active
+### Terminal 2: frontend
+```bash
+cd /home/lincoln/Desktop/integrated/Frontend
+/home/lincoln/.cache/ms-playwright-go/1.50.1/node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173
+```
+
+If `node` and `npm` are installed normally on your system, you can use:
+```bash
+cd /home/lincoln/Desktop/integrated/Frontend
+npm run dev -- --host 127.0.0.1 --port 5173
+```
+
+### Terminal 3: sandbox monitor
+```bash
+cd /home/lincoln/Desktop/integrated/sandbox
+source /home/lincoln/Desktop/integrated/Backend/.venv-ml/bin/activate
+python sandbox_monitor.py
+```
 
 Frontend:
-- `http://localhost:5173`
+- `http://127.0.0.1:5173`
 
 Backend:
 - `http://127.0.0.1:8000`
 
-Stop everything:
-
-```powershell
-cd sandbox
-powershell -ExecutionPolicy Bypass -File .\scripts\Stop-BackendAndSandbox.ps1
-```
-
-## How sandbox review works
-1. The host app receives or detects a file in the staging folder.
-2. The sandbox monitor creates a session under `C:\Sandbox_VM_Input\sessions\...`.
-3. The VirtualBox guest opens separately from the host project.
-4. Inside the guest, open `\\VBOXSVR\CyberShieldSandbox\sessions\...`.
-5. Approve a file by moving it from `in` to `out`.
-6. Reject a file by deleting it from `in`.
-
-The project code does not need to be moved into the VM.
+## Review flow
+1. A download lands in the Linux capture inbox first.
+2. The sandbox monitor detects the file and waits for it to become stable.
+3. The file is moved into quarantine under `staging/Download`.
+4. The backend scans it and logs the result.
+5. If the file is safe, the UI prompts the user to choose where to save it.
+6. If the file is unsafe, the UI warns the user and allows explicit override.
+7. After release or rejection, the quarantined file is removed but the analysis history remains in logs.
 
 ## Notes
-- The combined launcher uses the project-local staging path `sandbox\staging\Download`.
-- If you run the monitor by itself, it can still use its standalone default staging path behavior.
-- Set `VIRTUALBOX_OPEN_ON_START=false` if you want the launcher to stop auto-opening the VM window.
+- The current UI treats capture as always on, not as a user-toggle feature.
+- The backend rewrites the Linux download directory to the capture inbox on startup.
+- Mounted external drives are still watched automatically.
+- Runtime quarantine and capture contents are intentionally ignored by Git.
 
 ## More docs
 - [Backend README](./Backend/README.md)
